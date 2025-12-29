@@ -21,9 +21,11 @@
  *                                                                         *
  ***************************************************************************/
 """
-from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication
+from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, QFileInfo
 from qgis.PyQt.QtGui import QIcon
-from qgis.PyQt.QtWidgets import QAction
+from qgis.PyQt.QtWidgets import QAction, QFileDialog, QMessageBox, QDoubleSpinBox
+from qgis.core import Qgis, QgsProject
+from qgis import processing
 
 # Initialize Qt resources from file resources.py
 from .resources import *
@@ -33,6 +35,7 @@ import os.path
 
 
 import ee
+
 
 
 
@@ -193,6 +196,7 @@ class fogo_florestal:
             self.first_start = False
             self.dlg = fogo_florestalDialog()
             self.dlg.pushButton_2.clicked.connect(self.estatisticas)
+            self.dlg.pushButton_4.clicked.connect(self.salvar)
 
         # show the dialog
         self.dlg.show()
@@ -205,18 +209,18 @@ class fogo_florestal:
             pass
 
 
+
     def estatisticas(self):
+        output = self.dlg.lineEdit_6.text()
+
+
         """Calcula estatísticas básicas de área ardida (Monchique 2018)."""
         self._gee_init()
-
-        # ---------- 2) AOI (Monchique - bbox simples) ----------
-        # BBOX aproximada em WGS84 (lon, lat). Ajusta se quiseres.
-        # (minLon, minLat, maxLon, maxLat)
+                        # ---------- 1) Autenticação e inicialização ----------
         aoi = ee.Geometry.Rectangle(
             [-8.75, 37.15, -8.25, 37.45],
             proj="EPSG:4326",
-            geodesic=False,
-        )
+            geodesic=False)
 
         # ---------- 3) Datas (Monchique 2018) ----------
         pre_start, pre_end = "2018-06-15", "2018-08-02"
@@ -246,11 +250,14 @@ class fogo_florestal:
         area_ha = area_m2.divide(10000)
 
         # ---------- 6) Output ----------
+        n_pre_count = n_pre.getInfo()
+        n_post_count = n_post.getInfo()
+        burned_area_ha = float(area_ha.getInfo())
         print("=== Core test (Monchique 2018) ===")
-        print("Pre window:", pre_start, "to", pre_end, "| images:", n_pre.getInfo())
-        print("Post window:", post_start, "to", post_end, "| images:", n_post.getInfo())
+        print("Pre window:", pre_start, "to", pre_end, "| images:", n_pre_count)
+        print("Post window:", post_start, "to", post_end, "| images:", n_post_count)
         print("Threshold dNBR:", threshold)
-        print("Burned area (ha):", float(area_ha.getInfo()))
+        print("Burned area (ha):", burned_area_ha)
 
         # (Opcional) estatísticas rápidas do dNBR
         dnbr_stats = (
@@ -262,6 +269,35 @@ class fogo_florestal:
             ).getInfo()
         )
         print("dNBR min/max:", dnbr_stats)
+
+        output_path = os.path.join(self.plugin_dir, "estatisticas.txt")
+        report_lines = [
+            "=== Estatisticas (Monchique 2018) ===",
+            f"Pre window: {pre_start} to {pre_end} | images: {n_pre_count}",
+            f"Post window: {post_start} to {post_end} | images: {n_post_count}",
+            f"Threshold dNBR: {threshold}",
+            f"Burned area (ha): {burned_area_ha}",
+            f"dNBR min/max: {dnbr_stats}",
+        ]
+        with open(output_path, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(report_lines))
+        print("Relatorio salvo em:", output)
+
+        written_path = result.get('OUTPUT', output)
+
+
+        self.iface.messageBar().pushMessage(
+            "Success", "Output file written at " + str(written_path),
+            level=Qgis.Success, duration=3,
+        )
+
+        
+
+
+    def salvar(self):
+        filename, filter_string = QFileDialog.getSaveFileName(self.dlg, "Select Output file", "", '*.txt')
+        if filename:
+            self.dlg.lineEdit_6.setText(filename)
 
     def _gee_init(self):
         try:
