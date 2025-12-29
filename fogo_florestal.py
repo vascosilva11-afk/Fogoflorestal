@@ -33,13 +33,6 @@ import os.path
 
 
 import ee
-import geemap
-import requests
-from io import BytesIO
-from PIL import Image
-import matplotlib.pyplot as plt
-ee.Authenticate()
-ee.Initialize(project='ee-vascosilvagames11')
 
 
 
@@ -212,60 +205,94 @@ class fogo_florestal:
             pass
 
 
+    def estatisticas(self):
+        """Calcula estatísticas básicas de área ardida (Monchique 2018)."""
+        self._gee_init()
 
-        def estatisticas(self):
-                        # ---------- 1) Autenticação e inicialização ----------
-            def gee_init():
-                try:
-                    ee.Initialize(project='ee-vascosilvagames11')
-                except Exception:
-                    # Primeira vez (ou credenciais ausentes) -> autenticar
-                    ee.Authenticate()
-                    ee.Initialize(project='ee-vascosilvagames11')
+        # ---------- 2) AOI (Monchique - bbox simples) ----------
+        # BBOX aproximada em WGS84 (lon, lat). Ajusta se quiseres.
+        # (minLon, minLat, maxLon, maxLat)
+        aoi = ee.Geometry.Rectangle(
+            [-8.75, 37.15, -8.25, 37.45],
+            proj="EPSG:4326",
+            geodesic=False,
+        )
 
-            gee_init()
+        # ---------- 3) Datas (Monchique 2018) ----------
+        pre_start, pre_end = "2018-06-15", "2018-08-02"
+        post_start, post_end = "2018-08-11", "2018-10-15"
 
-            # ---------- 2) AOI (Monchique - bbox simples) ----------
-            # BBOX aproximada em WGS84 (lon, lat). Ajusta se quiseres.
-            # (minLon, minLat, maxLon, maxLat)
-            aoi = ee.Geometry.Rectangle([-8.75, 37.15, -8.25, 37.45], proj="EPSG:4326", geodesic=False)
+        # ---------- 5) Processamento ----------
+        nbr_pre, n_pre = self._nbr_composite(aoi, pre_start, pre_end)
+        nbr_post, n_post = self._nbr_composite(aoi, post_start, post_end)
 
-            # ---------- 3) Datas (Monchique 2018) ----------
-            pre_start, pre_end = "2018-06-15", "2018-08-02"
-            post_start, post_end = "2018-08-11", "2018-10-15"
-                        # ---------- 5) Processamento ----------
-            nbr_pre, n_pre = nbr_composite(pre_start, pre_end)
-            nbr_post, n_post = nbr_composite(post_start, post_end)
+        dnbr = nbr_pre.subtract(nbr_post).rename("dNBR")
 
-            dnbr = nbr_pre.subtract(nbr_post).rename("dNBR")
+        threshold = 0.27
+        burned = dnbr.gt(threshold).selfMask().rename("burned")
 
-            threshold = 0.27
-            burned = dnbr.gt(threshold).selfMask().rename("burned")
+        # Área ardida (ha) dentro da AOI
+        area_m2 = (
+            burned.multiply(ee.Image.pixelArea())
+            .reduceRegion(
+                reducer=ee.Reducer.sum(),
+                geometry=aoi,
+                scale=20,  # 20 m é apropriado para B12 (SWIR2)
+                maxPixels=1e13,
+            )
+            .getNumber("burned")
+        )
 
-            # Área ardida (ha) dentro da AOI
-            area_m2 = (burned.multiply(ee.Image.pixelArea())
-                    .reduceRegion(
-                        reducer=ee.Reducer.sum(),
-                        geometry=aoi,
-                        scale=20,        # 20 m é apropriado para B12 (SWIR2)
-                        maxPixels=1e13
-                    )
-                    .getNumber("burned"))
+        area_ha = area_m2.divide(10000)
 
-            area_ha = area_m2.divide(10000)
+        # ---------- 6) Output ----------
+        print("=== Core test (Monchique 2018) ===")
+        print("Pre window:", pre_start, "to", pre_end, "| images:", n_pre.getInfo())
+        print("Post window:", post_start, "to", post_end, "| images:", n_post.getInfo())
+        print("Threshold dNBR:", threshold)
+        print("Burned area (ha):", float(area_ha.getInfo()))
 
-            # ---------- 6) Output ----------
-            print("=== Core test (Monchique 2018) ===")
-            print("Pre window:", pre_start, "to", pre_end, "| images:", n_pre.getInfo())
-            print("Post window:", post_start, "to", post_end, "| images:", n_post.getInfo())
-            print("Threshold dNBR:", threshold)
-            print("Burned area (ha):", float(area_ha.getInfo()))
-
-            # (Opcional) estatísticas rápidas do dNBR
-            dnbr_stats = dnbr.reduceRegion(
+        # (Opcional) estatísticas rápidas do dNBR
+        dnbr_stats = (
+            dnbr.reduceRegion(
                 reducer=ee.Reducer.minMax(),
                 geometry=aoi,
                 scale=20,
-                maxPixels=1e13
+                maxPixels=1e13,
             ).getInfo()
-            print("dNBR min/max:", dnbr_stats)
+        )
+        print("dNBR min/max:", dnbr_stats)
+
+    def _gee_init(self):
+        try:
+            ee.Initialize(project='ee-vascosilvagames11')
+        except Exception:
+            ee.Authenticate()
+            ee.Initialize(project='ee-vascosilvagames11')
+
+    def _mask_s2_scl(self, img: ee.Image) -> ee.Image:
+        scl = img.select("SCL")
+        good = (
+            scl.eq(4)
+            .Or(scl.eq(5))
+            .Or(scl.eq(6))
+            .Or(scl.eq(7))
+            .Or(scl.eq(11))
+        )
+        return img.updateMask(good).divide(10000)
+
+    def _add_nbr(self, img: ee.Image) -> ee.Image:
+        nbr = img.normalizedDifference(["B8", "B12"]).rename("NBR")
+        return img.addBands(nbr)
+
+    def _nbr_composite(self, aoi: ee.Geometry, start: str, end: str):
+        col = (
+            ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+            .filterBounds(aoi)
+            .filterDate(start, end)
+            .filter(ee.Filter.lte("CLOUDY_PIXEL_PERCENTAGE", 60))
+            .map(self._mask_s2_scl)
+            .map(self._add_nbr)
+        )
+        nbr = col.select("NBR").median().clip(aoi)
+        return nbr, col.size()
