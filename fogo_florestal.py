@@ -211,7 +211,7 @@ class fogo_florestal:
 
 
     def estatisticas(self):
-        output = self.dlg.lineEdit_6.text()
+        output = self.dlg.lineEdit_6.text().strip()
 
 
         """Calcula estatísticas básicas de área ardida (Monchique 2018)."""
@@ -223,7 +223,7 @@ class fogo_florestal:
             geodesic=False)
 
         # ---------- 3) Datas (Monchique 2018) ----------
-        pre_start, pre_end = "2018-06-15", "2018-08-02"
+        pre_start, pre_end = "2018-06-02", "2018-08-02"
         post_start, post_end = "2018-08-11", "2018-10-15"
 
         # ---------- 5) Processamento ----------
@@ -270,7 +270,7 @@ class fogo_florestal:
         )
         print("dNBR min/max:", dnbr_stats)
 
-        output_path = os.path.join(self.plugin_dir, "estatisticas.txt")
+        output_path = output or os.path.join(self.plugin_dir, "estatisticas.txt")
         report_lines = [
             "=== Estatisticas (Monchique 2018) ===",
             f"Pre window: {pre_start} to {pre_end} | images: {n_pre_count}",
@@ -281,14 +281,16 @@ class fogo_florestal:
         ]
         with open(output_path, "w", encoding="utf-8") as handle:
             handle.write("\n".join(report_lines))
-        print("Relatorio salvo em:", output)
 
-        written_path = result.get('OUTPUT', output)
+
+        print("Relatorio salvo em:", output_path)
 
 
         self.iface.messageBar().pushMessage(
-            "Success", "Output file written at " + str(written_path),
-            level=Qgis.Success, duration=3,
+            "Success",
+            "Output file written at " + str(output_path),
+            level=Qgis.Success,
+            duration=3
         )
 
         
