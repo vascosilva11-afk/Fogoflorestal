@@ -35,6 +35,7 @@ import os.path
 
 
 import ee
+import urllib.request
 
 
 
@@ -229,11 +230,28 @@ class fogo_florestal:
         # ---------- 5) Processamento ----------
         nbr_pre, n_pre = self._nbr_composite(aoi, pre_start, pre_end)
         nbr_post, n_post = self._nbr_composite(aoi, post_start, post_end)
+        rgb_post = (
+            ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+            .filterBounds(aoi)
+            .filterDate(post_start, post_end)
+            .filter(ee.Filter.lte("CLOUDY_PIXEL_PERCENTAGE", 60))
+            .map(self._mask_s2_scl)
+            .select(["B4", "B3", "B2"])
+            .median()
+            .clip(aoi)
+        )
 
         dnbr = nbr_pre.subtract(nbr_post).rename("dNBR")
 
         threshold = 0.27
         burned = dnbr.gt(threshold).selfMask().rename("burned")
+        boundaries = (
+            ee.FeatureCollection("FAO/GAUL/2015/level2")
+            .filterBounds(aoi)
+        )
+        outline = ee.Image().paint(boundaries, 1, 2).visualize(
+            palette=["000000"]
+        )
 
         # Área ardida (ha) dentro da AOI
         area_m2 = (
@@ -271,6 +289,8 @@ class fogo_florestal:
         print("dNBR min/max:", dnbr_stats)
 
         output_path = output or os.path.join(self.plugin_dir, "estatisticas.txt")
+        output_dir = os.path.dirname(output_path) or self.plugin_dir
+        base_name = os.path.splitext(os.path.basename(output_path))[0] or "estatisticas"
         report_lines = [
             "=== Estatisticas (Monchique 2018) ===",
             f"Pre window: {pre_start} to {pre_end} | images: {n_pre_count}",
@@ -282,13 +302,54 @@ class fogo_florestal:
         with open(output_path, "w", encoding="utf-8") as handle:
             handle.write("\n".join(report_lines))
 
+        dnbr_path = os.path.join(output_dir, f"{base_name}_dnbr.png")
+        burned_path = os.path.join(output_dir, f"{base_name}_burned.png")
+
+        vis_dnbr = {
+            "min": -0.2,
+            "max": 1.0,
+            "palette": ["ffffff", "fff200", "ff8c00", "ff0000"],
+        }
+        vis_burned = {
+            "min": 0,
+            "max": 1,
+            "palette": ["ff0000"],
+        }
+        vis_ref = {
+            "bands": ["B4", "B3", "B2"],
+            "min": 0.0,
+            "max": 0.3,
+        }
+        dnbr_vis = dnbr.visualize(**vis_dnbr).blend(outline)
+        burned_vis = burned.visualize(**vis_burned).blend(outline)
+
+        def download_thumb(image, vis, output_file):
+            params = {
+                "region": aoi,
+                "dimensions": 900,
+                "crs": "EPSG:4326",
+                "format": "png",
+            }
+            if vis:
+                params["min"] = vis.get("min")
+                params["max"] = vis.get("max")
+                params["palette"] = vis.get("palette")
+                if vis.get("bands"):
+                    params["bands"] = vis.get("bands")
+            url = image.getThumbURL(params)
+            urllib.request.urlretrieve(url, output_file)
+
+        download_thumb(dnbr_vis, None, dnbr_path)
+        download_thumb(burned_vis, None, burned_path)
+        ref_path = os.path.join(output_dir, f"{base_name}_referencia.png")
+        download_thumb(rgb_post, vis_ref, ref_path)
 
         print("Relatorio salvo em:", output_path)
 
 
         self.iface.messageBar().pushMessage(
             "Success",
-            "Output file written at " + str(output_path),
+            "Output file and PNGs written at " + str(output_dir),
             level=Qgis.Success,
             duration=3
         )
